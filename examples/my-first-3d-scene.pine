@@ -1,0 +1,20 @@
+// My First 3D Scene
+// An example from the Pine3D publication on TradingView.
+// (c) Alien_Algorithms. Licensed under CC BY-NC-SA 4.0, see LICENSE.
+//@version=6
+indicator("My First 3D Scene", overlay = false, max_polylines_count = 100, max_lines_count = 500, max_labels_count = 500)
+import Alien_Algorithms/Pine3D/5 as p3d
+
+var p3d.Scene scene = p3d.newScene()
+var p3d.Mesh  sun   = na
+
+if barstate.isfirst
+    scene.setLightDir(1.0, -1.0, 0.5).setAmbient(0.3)
+    sun := p3d.sphere(50.0, 16, 12, color.orange).setTag("sun")
+    scene.add(sun)
+    p3d.wireGrid(scene, 300.0, 300.0, 6, 6, color.new(color.gray, 80))
+    scene.camera.orbit(35.0, 25.0, 220.0)
+
+if barstate.islast
+    sun.rotateBy(0.0, 1.5, 0.0)
+    p3d.render(scene, lighting = true)

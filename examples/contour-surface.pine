@@ -1,0 +1,29 @@
+// Pine3D - Contour Surface
+// An example from the Pine3D publication on TradingView.
+// (c) Alien_Algorithms. Licensed under CC BY-NC-SA 4.0, see LICENSE.
+//@version=6
+indicator("Pine3D - Contour Surface", overlay = false, max_polylines_count = 100, max_lines_count = 500, max_labels_count = 500)
+import Alien_Algorithms/Pine3D/5 as p3d
+
+var p3d.Scene scene   = p3d.newScene()
+var p3d.Mesh  heatmap = na
+
+if barstate.isfirst
+    // Damped cosine ripple
+    int N = 20
+    matrix<float> data = matrix.new<float>(N, N, 0.0)
+    for r = 0 to N - 1
+        for c = 0 to N - 1
+            float dx = c - (N - 1) / 2.0
+            float dz = r - (N - 1) / 2.0
+            float d  = math.sqrt(dx * dx + dz * dz) * 0.7
+            data.set(r, c, math.cos(d) * math.exp(-d * 0.12) * 50.0)
+
+    heatmap := p3d.surface(data, 200.0, color.blue, color.red, 24)
+      .gridBox()
+      .gridLabels(color.white, "X", "Amplitude", "Z")
+    scene.add(heatmap)
+    scene.camera.orbit(35.0, 25.0, 380.0)
+
+if barstate.islast
+    p3d.render(scene, lighting = true)

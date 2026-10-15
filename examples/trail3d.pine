@@ -1,0 +1,25 @@
+// Pine3D - Trail3D
+// An example from the Pine3D publication on TradingView.
+// (c) Alien_Algorithms. Licensed under CC BY-NC-SA 4.0, see LICENSE.
+//@version=6
+indicator("Pine3D - Trail3D", overlay = false, max_polylines_count = 100, max_lines_count = 500, max_labels_count = 500)
+import Alien_Algorithms/Pine3D/5 as p3d
+
+var p3d.Scene   scene = p3d.newScene()
+var p3d.Trail3D trail = na
+
+if barstate.isfirst
+    trail := p3d.trail3D(220.0, 200, color.yellow)
+      .cage(true)
+      .axisLabels("sin", "cos", color.white)
+    trail._uProj.col := #00ffff69
+    trail._vProj.col := #ff00ff71
+    scene.add(trail)
+    scene.camera.orbit(215.0, 20.0, 360.0)
+
+float phase = bar_index * 0.15
+float sinX  = math.sin(phase) * 100.0
+float cosY  = math.cos(phase) * 100.0
+if barstate.isconfirmed
+    trail.pushSample(sinX, cosY)
+    p3d.render(scene)

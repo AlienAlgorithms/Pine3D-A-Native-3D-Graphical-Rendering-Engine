@@ -1,0 +1,22 @@
+// Pine3D - Bars3D
+// An example from the Pine3D publication on TradingView.
+// (c) Alien_Algorithms. Licensed under CC BY-NC-SA 4.0, see LICENSE.
+//@version=6
+indicator("Pine3D - Bars3D", overlay = false, max_polylines_count = 100, max_lines_count = 500, max_labels_count = 500)
+import Alien_Algorithms/Pine3D/5 as p3d
+
+var p3d.Scene scene = p3d.newScene()
+var p3d.Mesh  bars  = na
+array<float>  values = array.from(volume - volume[1], volume[1] - volume[2], volume[2] - volume[3], volume[3] - volume[4], volume[4] - volume[5], volume[5] - volume[6])
+array<string> names  = array.from("ΔV0", "ΔV-1", "ΔV-2", "ΔV-3", "ΔV-4", "ΔV-5")
+
+if barstate.isfirst
+    bars := p3d.bars3D(values, 30.0, 30.0, 10.0, color.blue, color.red, 200.0)
+      .barLabels(names)
+    scene.add(bars)
+    p3d.wireGrid(scene, 300.0, 300.0, 6, 6, color.new(color.gray, 80))
+    scene.camera.orbit(215.0, 25.0, 360.0)
+
+if barstate.islast
+    bars.updateBars(values)
+    p3d.render(scene, lighting = true)

@@ -1,0 +1,23 @@
+// Pine3D with PineCanvas
+// An example from the Pine3D publication on TradingView.
+// (c) Alien_Algorithms. Licensed under CC BY-NC-SA 4.0, see LICENSE.
+//@version=6
+indicator("Pine3D with PineCanvas", overlay = false, max_polylines_count = 100)
+import Alien_Algorithms/Pine3D/5 as p3d
+import Alien_Algorithms/PineCanvas/1 as pc
+
+var p3d.Scene scene = p3d.newScene()
+var pc.PaletteField frame = pc.paletteField(240, 384)
+var pc.Canvas canvas = pc.newCanvas()
+
+if barstate.isfirst
+    scene.add(p3d.cube(60.0, color.orange))
+    // The floor: grid() faces down, so it is turned over
+    scene.add(p3d.grid(600.0, 600.0, 8, 8, #3a4258).rotateTo(180.0, 0.0, 0.0).moveTo(0.0, -30.0, 0.0))
+    scene.camera.orbit(35.0, 25.0, 180.0)
+    scene.setLightDir(-0.7, -1.0, -0.3).setAmbient(0.25).setShadowStrength(0.6)
+
+if barstate.islastconfirmedhistory and bar_index >= 384
+    array<color> shades = scene.rasterize(frame.band(0), 384, 240, shades = 16, zoom = 2.4)
+    canvas.palette(shades)
+    canvas.drawLookback(frame, 0, 0.0, 240.0)

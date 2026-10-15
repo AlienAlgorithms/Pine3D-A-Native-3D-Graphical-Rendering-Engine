@@ -1,0 +1,24 @@
+// Pine3D - Scatter Cloud
+// An example from the Pine3D publication on TradingView.
+// (c) Alien_Algorithms. Licensed under CC BY-NC-SA 4.0, see LICENSE.
+//@version=6
+indicator("Pine3D - Scatter Cloud", overlay = false, max_polylines_count = 100, max_lines_count = 500, max_labels_count = 500)
+import Alien_Algorithms/Pine3D/5 as p3d
+
+var p3d.Scene scene = p3d.newScene()
+var array<p3d.Label3D> points = array.new<p3d.Label3D>()
+
+if barstate.isfirst
+    for i = 0 to 499
+        p3d.Vec3 pos = p3d.vec3(0.0, 0.0, 0.0)
+        points.push(p3d.Label3D.new(position = pos, txt = "•"))
+    scene.add(points)
+    scene.camera.orbit(35.0, 20.0, 400.0)
+
+if barstate.islast
+    for i = 0 to points.size() - 1
+        float t = i * 0.05 + bar_index * 0.01
+        p3d.Label3D pt = points.get(i)
+        pt.position  := p3d.vec3(80.0 * math.cos(t), i * 0.4 - 100.0, 80.0 * math.sin(t))
+        pt.textColor := i % 2 == 0 ? color.aqua : color.fuchsia
+    p3d.render(scene)
