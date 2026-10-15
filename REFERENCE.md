@@ -1,687 +1,353 @@
-# Pine3D
+# PineCanvas
 
-> Pine3D is an open-source 3D rendering engine for TradingView, published as a Pine Script v6 library by Alien_Algorithms. It draws meshes, surfaces, 3D bar charts, streamed trails and scatter clouds on a chart, with a perspective camera, directional and point lights, shadows, depth sorting and occlusion culling, inside TradingView's drawing limits.
+> PineCanvas is an open-source graphics engine for TradingView, published as a Pine Script v6 library by Alien_Algorithms. It draws heatmaps, detailed images, rasterized 3D frames and large batches of filled shapes by tracing same-colour regions and packing them into shared polylines, so one indicator can show over a million cells instead of the few hundred that one box per cell allows.
 
-- Product page: https://alienalgorithms.com/pine3d
-- Documentation: https://docs.alienalgorithms.com/Pine3D-Graphics-Engine-Tradingview
-- Library and source code on TradingView: https://www.tradingview.com/script/I2K4hIdP-Pine3D-A-Native-3D-Graphical-Rendering-Engine/
-- Import: `import Alien_Algorithms/Pine3D/5 as p3d` (use the latest version number shown on the TradingView publication)
+- Product page: https://alienalgorithms.com/pinecanvas
+- Documentation: https://docs.alienalgorithms.com/PineCanvas-Graphics-Engine-Tradingview
+- Library and source code on TradingView: https://www.tradingview.com/script/KqYfTY0F-PineCanvas-A-Native-High-Resolution-Graphics-Engine/
+- Source code, examples and this reference on GitHub: https://github.com/AlienAlgorithms/PineCanvas-A-Native-High-Resolution-Graphics-Engine-for-TradingView
+- Import: `import Alien_Algorithms/PineCanvas/1 as pc` (use the latest version number shown on the TradingView publication)
 - Language: Pine Script v6
 - Author: Alien_Algorithms, https://www.tradingview.com/u/Alien_Algorithms/?aff_id=169033#published-scripts
 - Licence: CC BY-NC-SA 4.0. Free for non-commercial use when Alien_Algorithms is credited. Commercial use needs a licence from Alien_Algorithms.
 
-This file is the plain-text reference for the product page. It is written so that a person or an AI assistant can write correct Pine3D code from it. Names, fields and defaults are taken from the library source, version 5.
+This file is the plain-text reference for the product page. It is written so that a person or an AI assistant can write correct PineCanvas code from it. Signatures, parameter names, defaults and ranges are taken from the library source.
 
-The API is chainable and addressed by tags, so creating a mesh, adding it, aiming the camera at it and drawing it takes four lines:
+## When to use PineCanvas
 
-```pine
-p3d.Mesh box = p3d.cube(40.0, color.orange).setTag("hero").rotateBy(0.0, 45.0, 0.0)
-scene.add(box)
-scene.lookAt("hero")
-p3d.render(scene)
-```
+Use it when a TradingView indicator has to draw more than Pine Script's own drawing objects allow:
 
-## Contents
+- Heatmaps placed on price: liquidation maps, volatility maps, order-flow estimates, probability surfaces, multi-length oscillator maps.
+- Images and exact-colour graphics: fractals, scalograms, pixel scenes, rasterized 3D frames from Pine3D.
+- Many filled shapes: session volume profiles, zones, and whole chart interfaces built from rectangles, triangles, ellipses and polygons.
 
-1. Setup requirements
-2. Quick start: your first scene
-3. The scene lifecycle
-4. Meshes and primitives
-5. Transforms and animation
-6. The camera
-7. Lighting and shadows
-8. Contour surfaces
-9. Bars3D: categorical 3D bar charts
-10. Trail3D: streamed oscillator paths
-11. Scatter clouds
-12. Overlay primitives: labels, lines, polylines
-13. Custom meshes and merging
-14. The renderer
-15. Rasterizing a scene for PineCanvas
-16. Mesh drawing modes
-17. Performance guide
-18. Common pitfalls
-19. API quick reference
-20. Licence
+Pine Script allows 500 boxes and 100 polylines per script. One box per cell runs out at 20 x 25 cells. PineCanvas traces each same-colour region, discards the internal edges and joins separate regions with zero-width links, so the regions of one colour share polylines of up to 10,000 points each. A solid block of thousands of cells costs four corners. Transparent cells cost nothing.
 
-## Setup requirements
+Around 1.1 million cells in one image is an attainable scale. The published Julia fractal demo is 1344 x 804 cells, which is 1,080,576. The practical limit depends on boundary complexity, colour distribution, memory and execution time, not on a fixed pixel count.
 
-Pine3D draws with polylines, lines and labels at the same time, so every script that uses it raises all three budgets in its `indicator()` declaration and imports the library under an alias:
+## The model in three steps
+
+1. A source holds the data. A `ValueField` holds numbers, a `PaletteField` holds exact palette indices, and `ValueScroll` / `PaletteScroll` are rolling versions that take one new column per bar.
+2. A `Canvas` holds the colours and the style, and owns the drawings it creates.
+3. A draw call places the source on the chart between bar indices, timestamps or explicit edges. Shapes skip the source: they are queued on a Canvas and drawn with `drawShapes()`.
+
+Rows and columns: row 0 is the bottom row unless `invertRows()` is set, and column 0 is the leftmost, oldest column. In a `ValueField`, `na` is transparent. In a `PaletteField`, the index `-1` is transparent and `0` selects the first palette colour.
+
+## Minimal example
+
+A complete indicator. It colours the last 30 candles green or red by direction.
 
 ```pine
 //@version=6
-indicator("My 3D Scene", overlay = false,
-     max_polylines_count = 100,
-     max_lines_count     = 500,
-     max_labels_count    = 500)
+indicator("PineCanvas - Candle Colours", overlay = false, max_polylines_count = 100)
+import Alien_Algorithms/PineCanvas/1 as pc
+// Make sure to update to the latest library version
 
-import Alien_Algorithms/Pine3D/5 as p3d
+var pc.PaletteField pixels = pc.paletteField(2, 30)
+var pc.Canvas canvas = pc.newCanvas(array.from(color.red, color.lime))
+
+if barstate.islast and bar_index >= 29
+    for col = 0 to 29
+        pixels.set(0, col, close[29 - col] >= open[29 - col] ? 1 : 0)
+    canvas.drawLookback(pixels, 0, 0.0, 2.0)
 ```
 
-These are TradingView's hard maximums. Pine3D's job is to fit as much geometry as possible inside them (see Contour surfaces for how far that goes).
+Each candle contributes one coloured cell. The untouched row stays transparent.
 
-## Quick start: your first scene
+## Rules that keep a script correct
 
-A complete, lit, animated 3D scene:
+- Declare the indicator with `max_polylines_count = 100`. PineCanvas draws with polylines, and every Canvas in a script shares that limit.
+- Keep sources and canvases in `var` variables. A Canvas owns its polylines and replaces them each time it draws.
+- Draw once per update, usually inside `if barstate.islast`. Use `barstate.islastconfirmedhistory` for a heavy picture that should render once.
+- Stateful series functions such as `ta.rsi()` or `ta.sma()` must run on every bar, outside the `barstate.islast` block.
+- For a rolling source, call `push()` once per bar inside `if barstate.isconfirmed`, with exactly `rows` values, bottom row first.
+- `bottom` and `top` are the vertical bounds of the picture. Use real prices on an overlay, or any numbers in a separate pane. `top` must be greater than `bottom`.
+- `drawLookback(field, 0, bottom, top)` uses one bar per column and ends at the current bar. A non-zero `lookback` must be at least the field's column count. The left edge is `bar_index + rightOffset - span` and must not be negative, so wait until enough bars exist.
+- Bar-index placement reaches 10,000 bars back and 500 bars forward. Use `drawTime()` or `drawTimeGrid()` for anything farther.
+- A drawn field needs at least 2 rows and 2 columns.
+- A palette or gradient has 2 to 100 colours. Each visible colour needs at least one polyline, so fewer colours leave room for more detail.
+- One Canvas is one layer. Every `draw...()` call and every `drawShapes()` call replaces what that Canvas drew before. Use a separate Canvas for each layer that has to stay visible.
+- Shape corners must come from `chart.point.from_time()`, in time and price. Points made with `chart.point.from_index()` are rejected.
+- For large images, write through `row()` or `band()` instead of calling `set()` for every cell, and spread heavy calculation across bars.
+- Canvas setters return the Canvas, so they chain: `pc.heatmap().colorLevels(48).opacity(10, 90).gamma(0.7)`.
+- Draw on the main price chart with `overlay = true` in `indicator()`, or with `forceOverlay()` on the Canvas.
+
+## API reference
+
+All names below are exported by the library. With `import Alien_Algorithms/PineCanvas/1 as pc`, functions are called as `pc.name(...)` and methods on the object they belong to.
+
+### Types
+
+| Type | What it is |
+| --- | --- |
+| `pc.ValueField` | A fixed grid of numbers, coloured through the Canvas gradient. Fields: `rows`, `columns`. |
+| `pc.PaletteField` | A fixed grid of exact palette indices. `-1` is transparent. Fields: `rows`, `columns`. |
+| `pc.ValueScroll` | A rolling grid of number columns. Fields: `rows`, `capacity`, `written`. |
+| `pc.PaletteScroll` | A rolling grid of palette-index columns. Fields: `rows`, `capacity`, `written`. |
+| `pc.Canvas` | Holds colours and style, owns its polylines, and draws sources and shapes. |
+| `pc.Style` | A complete rendering configuration, built with `pc.newStyle()`. |
+| `pc.ScaleMode` | Enum for automatic scaling: `wholeGrid`, `eachColumn`, `eachRow`. |
+
+### Sources
+
+| Call | Description |
+| --- | --- |
+| `pc.valueField(int rows, int columns, float initial = na)` | A grid of numbers. Rows at least 1, columns 1 to 100,000. `na` cells are transparent. |
+| `pc.paletteField(int rows, int columns, int initial = -1)` | A grid of exact palette indices. `-1` is transparent. |
+| `pc.valueScroll(int rows, int capacity)` | A rolling source of number columns. Rows and capacity from 2 to 99,999. |
+| `pc.paletteScroll(int rows, int capacity)` | A rolling source of palette-index columns. |
+| `scroll.push(array<float> column)` / `scroll.push(array<int> column)` | Appends one column of exactly `rows` values, bottom row first. Overwrites the oldest column once full. |
+| `field.get(int row, int column)` | Reads one cell. |
+| `field.set(int row, int column, value)` | Writes one cell. Returns the field. |
+| `field.fill(value)` | Writes one value into every cell. Returns the field. |
+| `field.row(int row)` | A writable array view of one row. Writes update the field. Do not resize it. |
+| `field.bandCount()`, `field.band(int index)`, `field.bandStart(int index)`, `field.bandRows(int index)` | Direct access to the field's storage bands. A band array is row-major: the offset of a cell is `(row - bandStart(index)) * columns + column`. |
+
+### Field stamps
+
+They write into a field, clip to its bounds and return the field. Coordinates are rows and columns.
+
+| Call | Description |
+| --- | --- |
+| `field.rect(int row0, int column0, int row1, int column1, value, bool filled = true)` | A filled or outlined rectangle. |
+| `field.segment(int row0, int column0, int row1, int column1, value)` | A straight line of cells. |
+| `field.circle(int centerRow, int centerColumn, int radius, value, bool filled = false)` | A ring of cells, or a disc when filled. |
+
+### Canvas
+
+| Call | Description |
+| --- | --- |
+| `pc.newCanvas(array<color> colors = na)` | Full opacity and a fixed value range of 0 to 1. The colours are exact palette entries for palette sources and gradient stops for value sources. `na` selects black and white. |
+| `pc.heatmap(array<color> colors = na)` | A heatmap preset: automatic scaling, 64 colour levels, 15 to 90 opacity. `na` selects a thermal gradient. |
+| `pc.gradient(color lowColor, color highColor)` | A two-stop colour array. |
+| `pc.gradient(color color0, color color25, color color50, color color75, color color100)` | A five-stop colour array. |
+| `canvas.palette(array<color> colors)` | Replaces the palette or gradient stops. 2 to 100 colours. |
+| `canvas.colorLevels(int count)` | Samples a value source's gradient into 2 to 100 levels. Palette sources use their palette entries directly. |
+| `canvas.opacity(float lowOpacity, float highOpacity = na)` | Opacity from the lowest level to the highest, 0 to 100. One argument gives every level the same opacity. |
+| `canvas.autoScale(ScaleMode mode = ScaleMode.wholeGrid)` | Automatic normalization over the whole grid, each column or each row. |
+| `canvas.valueRange(float minimum, float maximum)` | A fixed value range instead of automatic scaling, so colours stay comparable between updates. |
+| `canvas.gamma(float value)` | The response curve, greater than 0. Below 1 lifts weak values, above 1 suppresses them. |
+| `canvas.logarithmicY(bool enabled = true)` | Logarithmic row spacing. Needs positive vertical bounds. |
+| `canvas.invertRows(bool enabled = true)` | Puts row 0 at the top. |
+| `canvas.forceOverlay(bool enabled = true)` | Places the drawings on the main price chart. |
+| `canvas.drawingLimit(int count)` | Caps the polylines this Canvas may own, 1 to 100. |
+| `pc.newStyle(int colorLevels = 64, float lowOpacity = 15.0, float highOpacity = 90.0, bool autoScale = false, float valueMin = 0.0, float valueMax = 1.0, float gamma = 1.0, bool logarithmicY = false, bool invertRows = false, bool forceOverlay = false, ScaleMode scaleMode = ScaleMode.wholeGrid, int drawingLimit = 100)` | Builds a complete Style. |
+| `canvas.configure(Style style)` | Applies a Style. |
+| `canvas.clear()` | Deletes every polyline the Canvas owns. |
+
+### Drawing fields
+
+Every call returns the Canvas and replaces its previous drawings.
+
+| Call | Description |
+| --- | --- |
+| `canvas.drawLookback(field, int lookback, float bottom, float top, int rightOffset = 0)` | Places a field ending at the current bar. `lookback` is the width in bars: 0 uses one bar per column, otherwise it must be at least the column count. |
+| `canvas.drawLookback(scroll, float bottom, float top, int rightOffset = 0)` | Draws a rolling source at its current column count, newest column on the right. Needs at least two pushed columns. |
+| `canvas.draw(field, int leftIndex, int rightIndex, float bottom, float top)` | Places a field between two bar indices. |
+| `canvas.drawTime(field, int leftTime, int rightTime, float bottom, float top)` | Places a field between two UNIX timestamps in milliseconds. |
+| `canvas.drawGrid(field, array<int> columnEdges, array<float> rowEdges)` | An uneven grid. Strictly increasing bar indices, `columns + 1` of them, and strictly increasing prices, `rows + 1` of them. |
+| `canvas.drawTimeGrid(field, array<int> timeEdges, array<float> rowEdges)` | The same with timestamps in milliseconds. |
+
+### Shapes
+
+Shapes are queued in time and price, grouped by fill colour and packed into polylines when drawn.
+
+| Call | Description |
+| --- | --- |
+| `canvas.rect(chart.point topLeft, chart.point bottomRight, color fillColor)` | Queues a rectangle from two opposite corners. |
+| `canvas.triangle(chart.point cornerA, chart.point cornerB, chart.point cornerC, color fillColor)` | Queues a triangle. |
+| `canvas.circle(chart.point centre, int radiusTime, float radiusPrice, int segments, color fillColor)` | Queues an ellipse. `radiusTime` is in milliseconds, `radiusPrice` in price units, `segments` from 3 to 9,999. |
+| `canvas.poly(array<chart.point> points, color fillColor)` | Queues any closed polygon of 3 to 9,999 points, convex or concave. |
+| `canvas.drawShapes()` | Draws the queue, replaces the Canvas's previous drawings, empties the queue and returns the number of polylines created. |
+| `canvas.clearShapes()` | Discards the queue without drawing. |
+| `canvas.shapeCount()` | Number of queued shapes. |
+| `pc.barsToTime(int offsetBars)` | Estimates a timestamp from a bar offset on the current timeframe. It does not account for session gaps. |
+
+One polyline holds about 1,600 four-corner rectangles of one colour. A batch accepts up to 100,000 source vertices, which is 25,000 rectangles. Same-colour overlaps form a union. Borders and per-shape layering are not part of the fill.
+
+### Inspection
+
+| Call | Description |
+| --- | --- |
+| `canvas.drawingCount()` | Polylines the Canvas currently owns. |
+| `canvas.componentCount()` | Connected same-colour regions found by the last field render. |
+| `canvas.dimensions()` | A `[rows, columns]` tuple from the last field render. |
+| `canvas.scaledRange()` | A `[minimum, maximum]` tuple, the value range the last field render used. |
+
+## Complete examples
+
+Each one is a whole indicator.
+
+### Rolling heatmap
+
+A `ValueScroll` keeps a moving window when one new column arrives each bar. Five RSI lengths become five rows, one column per confirmed bar.
 
 ```pine
 //@version=6
-indicator("My First 3D Scene", overlay = false, max_polylines_count = 100, max_lines_count = 500, max_labels_count = 500)
-import Alien_Algorithms/Pine3D/5 as p3d
+indicator("PineCanvas - Rolling RSI Heatmap", overlay = false,
+  max_polylines_count = 100)
+import Alien_Algorithms/PineCanvas/1 as pc
+// Make sure to update to the latest library version
+
+// Stateful series calculations must run on every bar.
+float rsi5 = ta.rsi(close, 5)
+float rsi8 = ta.rsi(close, 8)
+float rsi13 = ta.rsi(close, 13)
+float rsi21 = ta.rsi(close, 21)
+float rsi34 = ta.rsi(close, 34)
+
+var pc.ValueScroll history = pc.valueScroll(5, 150)
+var pc.Canvas heat = pc.heatmap(
+  pc.gradient(#602060, #305bb4, #31b6ad, #f4d24c, #f07735))
+  .colorLevels(32)
+  .valueRange(0.0, 100.0)
+  .opacity(25, 100)
 
-var p3d.Scene scene = p3d.newScene()
-var p3d.Mesh  sun   = na
-
-if barstate.isfirst
-    scene.setLightDir(1.0, -1.0, 0.5).setAmbient(0.3)
-    sun := p3d.sphere(50.0, 16, 12, color.orange).setTag("sun")
-    scene.add(sun)
-    p3d.wireGrid(scene, 300.0, 300.0, 6, 6, color.new(color.gray, 80))
-    scene.camera.orbit(35.0, 25.0, 220.0)
-
-if barstate.islast
-    sun.rotateBy(0.0, 1.5, 0.0)
-    p3d.render(scene, lighting = true)
-```
-
-What happens:
-
-1. The `Scene` and the mesh live in `var` variables, so they persist across bars.
-2. Geometry is built once, in `barstate.isfirst`.
-3. On the last bar the mesh is changed in place (`rotateBy`) and the frame is drawn with one `render()` call.
-
-Build once, change later, render once per frame: that is the lifecycle for every Pine3D script.
-
-## The scene lifecycle
-
-The recommended order:
-
-1. Create one persistent `Scene` with `p3d.newScene()` in a `var`. It comes with a default camera at (0, 0, 500) looking at the origin, and a default directional light.
-2. Build meshes and overlays once, in `barstate.isfirst`.
-3. On later bars, change things in place: transforms (`rotateBy`, `moveTo`), data updates (`updateSurface()`, `updateBars()`, `trail.pushSample()`), or direct field assignment on labels and lights.
-4. Call `render(scene, ...)` once per frame. It clears the previous frame's drawings by itself.
-
-Two calls that are easy to confuse:
-
-- `scene.clear()` removes objects from the scene graph (meshes, labels, lines, polylines). The build-once pattern rarely needs it.
-- `render()` clears only the previous frame's TradingView drawings, then draws again from the current scene graph.
-
-## Meshes and primitives
-
-### Ready-made geometry
-
-```pine
-p3d.Mesh box      = p3d.cube(40.0, color.orange)               // uniform cube
-p3d.Mesh brick    = p3d.cuboid(18.0, 14.0, 10.0, color.red)    // width, height, depth
-p3d.Mesh ball     = p3d.sphere(50.0, 16, 12, color.aqua)       // radius, segments, rings
-p3d.Mesh tube     = p3d.cylinder(20.0, 60.0, 12, color.lime)
-p3d.Mesh donut    = p3d.torus(40.0, 12.0, 24, 12, color.fuchsia)
-p3d.Mesh tip      = p3d.pyramid(30.0, 50.0, color.yellow)
-p3d.Mesh floor    = p3d.plane(200.0, 200.0, color.gray)
-p3d.Mesh ringFlat = p3d.circle(30.0, 48, color.blue)
-```
-
-Also available: `grid(w, d, divX, divZ, col)`, `disc(radiusX, radiusZ, seg, col)`, and the low-level `customMesh(verts, faces)` (see Custom meshes and merging).
-
-### Appearance
-
-Every appearance method returns the `Mesh`, so they chain:
-
-```pine
-box := box
-  .setColor(color.new(color.orange, 20))
-  .setStyle("wireframe")     // "solid" (default), "wireframe", "wireframe_front"
-  .setTag("hero")
-```
-
-`setFaceColor(faceIndex, col)` colours one face, and `show()` / `hide()` toggle visibility.
-
-Stroke styling for wireframe edges, and for face outlines in `"poly"` draw mode, is set by direct field assignment:
-
-```pine
-box.lineWidth := 3
-box.lineStyle := line.style_dashed
-```
-
-### The tag-based scene graph
-
-Every `Mesh`, `Label3D`, `Line3D` and `Polyline3D` can carry a string tag, so the scene can be searched by name:
-
-```pine
-scene.add(p3d.sphere(15, 10, 8, color.blue).setTag("planet"))
-
-// later, on any bar:
-p3d.Mesh planet = scene.getMesh("planet")
-if not na(planet)
-    planet.rotateBy(0, 2, 0)
-
-scene.lookAt("planet")     // aim the camera at a tagged mesh
-scene.remove("planet")     // remove by tag
-```
-
-`remove(tag)` searches meshes, then labels, then lines, then polylines, and removes the first match only. Do not reuse one tag across object types if you delete by tag.
-
-## Transforms and animation
-
-Transform methods change the mesh in place and return it for chaining:
-
-```pine
-mesh.moveTo(0, -20, 0)        // absolute position
-mesh.moveBy(5, 0, 0)          // relative move
-mesh.rotateTo(0, 45, 0)       // absolute rotation, in degrees
-mesh.rotateBy(0, 1.5, 0)      // relative rotation, in degrees
-mesh.scaleTo(2.0, 1.0, 1.0)   // per-axis scale
-mesh.scaleUniform(1.5)        // uniform scale
-```
-
-Chained: `mesh.moveTo(0, -20, 0).rotateTo(0, 45, 0).setStyle("solid")`.
-
-Animation is calling these on later bars, usually inside `barstate.islast`, before `render()`. The transform methods invalidate the mesh's cached world vertices automatically.
-
-Degrees and radians: `rotateTo()` and `rotateBy()` on a Mesh take degrees. The low-level `Vec3` methods `rotateX()`, `rotateY()` and `rotateZ()` take radians.
-
-If you write to `mesh.vertices` directly (for example `mesh.vertices.set(i, newVec)`), call `mesh.invalidateCache()` yourself, or the renderer draws stale geometry.
-
-## The camera
-
-Every scene has a perspective camera at `scene.camera`:
-
-```pine
-scene.camera.setPosition(0, 100, 300)   // place the camera
-scene.camera.lookAt(0, 20, 0)           // aim at a world-space point (also accepts a Vec3)
-scene.camera.orbit(35.0, 25.0, 380.0)   // spherical orbit: yaw, pitch, distance from target
-scene.camera.setFov(700.0)              // perspective scale factor
-```
-
-`orbit()` is the everyday call: set a target with `lookAt()` (or keep the origin), then orbit around it. For a slow rotation, call `orbit()` each frame with an angle driven by `bar_index`.
-
-The camera's fields `position`, `target` and `fov` can also be assigned directly. A higher `fov` gives less distortion, a lower one a more dramatic perspective. The default is 800.
-
-```pine
-scene.camera.fov := 1200.0
-```
-
-`scene.lookAt(tag)` on the Scene takes a mesh tag only. To aim at a point, use `scene.camera.lookAt(x, y, z)` or `scene.camera.lookAt(vec)`.
-
-## Lighting and shadows
-
-Shading is off by default. Turn it on per frame with `render(scene, lighting = true)`.
-
-### Configuring the scene light
-
-The scene-level lighting setters chain:
-
-```pine
-// Directional light (sun-style, parallel rays)
-scene.setLightDir(1.0, -1.0, 0.5).setAmbient(0.3).setShadowStrength(0.6)
-
-// Point light (bulb-style, radiates from a position)
-scene.setLightMode("point")
-  .setLightPos(0.0, 60.0, 150.0)
-  .setAmbient(0.2)
-  .setShadowStrength(0.7)
-  .showLightSource(true)      // draws a marker where the light sits
-```
-
-- A light direction is the way the light travels, so it points away from the light. `setLightDir(1.0, -1.0, 0.5)` lights the scene from above.
-- `setAmbient()` (0.0 to 1.0) sets the minimum brightness of faces turned away from the light.
-- `setShadowStrength()` (0.0 to 1.0) sets how dark cast shadows are. The default is 0, no shadows.
-- `showLightSource(true)` helps while composing a scene.
-
-### Light fields
-
-Every field of `scene.light` can be assigned directly, which is also how the light is animated:
-
-| Field | Meaning | Default |
-|---|---|---|
-| `mode` | `"directional"` or `"point"` | `"directional"` |
-| `direction` | Directional light: the way the light travels | (0.4, -0.7, -0.5) on a new scene |
-| `position` | Point light: world position of the source | na |
-| `ambient` | Minimum brightness, 0.0 to 1.0 | 0.3 |
-| `shadowStr` | Shadow strength, 0.0 (none) to 1.0 (full) | 0.0 |
-| `shadowBias` | Offset that removes shadow acne | 0.5 |
-| `selfShadow` | Lets a mesh shadow its own faces | false |
-| `showSource` | Draws a marker at a point light | false |
-| `enabled` | Master switch for the scene light | true |
-
-```pine
-scene.light.selfShadow := true      // meshes shadow themselves
-scene.light.shadowBias := 0.2       // adjust the shadow acne offset
-
-// A point light circling the scene:
-float a = bar_index * 0.03
-scene.light.position := p3d.Vec3.new(80.0 * math.cos(a), 60.0 + 50.0 * math.sin(a), 200.0)
-```
-
-Per mesh: `mesh.castShadow := false` stops a mesh casting shadows while it still receives light. Useful for ghost overlays and debug geometry.
-
-### A complete lit scene
-
-Adapted from the official Lights Demo: a point-lit sphere in front of a brick wall built from merged cuboids.
-
-```pine
-//@version=6
-indicator("Pine3D - Lights Demo", overlay = false, max_polylines_count = 100, max_lines_count = 500, max_labels_count = 500)
-import Alien_Algorithms/Pine3D/5 as p3d
-
-var p3d.Scene scene = p3d.newScene()
-
-if barstate.isfirst
-    scene.camera.lookAt(0, 20, 0)
-    scene.camera.orbit(70, 15, 500)
-
-    p3d.Mesh planet = p3d.sphere(15, 10, 8, color.new(#4488ff, 10))
-    planet.moveTo(0, 40, 60).setTag("planet")
-    scene.add(planet)
-
-    // Brick wall: many cuboids merged into one mesh, interior faces stripped
-    array<p3d.Mesh> bricks = array.new<p3d.Mesh>()
-    for r = 0 to 9
-        for c = 0 to 19
-            p3d.Mesh brick = p3d.cuboid(18.0, 14.0, 10.0, color.new(#cc6633, 5))
-            brick.moveTo(-171.0 + c * 18.0, r * 14.0, -120.0)
-            bricks.push(brick)
-    scene.add(p3d.mergeMeshes(bricks, "wall", removeInterior = true))
-
-    scene.setLightMode("point")
-      .setLightPos(0.0, 60.0, 150.0)
-      .setAmbient(0.2)
-      .setShadowStrength(0.7)
-      .showLightSource(true)
-    p3d.wireGrid(scene, 400, 400, 8, 8, color.new(color.gray, 85))
-
-if barstate.islast
-    float a = bar_index * 0.03
-    scene.light.position := p3d.Vec3.new(80.0 * math.cos(a), 60.0 + 50.0 * math.sin(a), 200.0)
-    p3d.render(scene, maxFaces = 400, culling = true, lighting = true, occlusion = true)
-```
-
-Performance note: the shadow grid that speeds up shadow tests is built for directional lights only. Point lights fall back to a linear scan, so shadow-heavy scenes run fastest with a directional light.
-
-## Contour surfaces
-
-Pine Script caps every indicator at 100 polylines and 500 lines. Drawn one triangle at a time, that budget runs out after a few hundred triangles. Pine3D's `surface()` uses contour band rendering instead: the surface's height is split into coloured bands, and every cell in one band, connected or not, is joined into a single polyline, with invisible zero-width bridges between separate islands.
-
-The practical result:
-
-- One polyline can carry up to about 2,000 separate triangle-equivalents.
-- A 40 x 40 heightmap (about 3,000 triangles) renders inside the budget with full per-band colouring; stress tests have run 40 x 80 grids.
-- Each band's path is depth-sorted, near-plane culled and cached between bars. After the build, only the screen projection runs per frame.
-
-### Creating a surface
-
-```pine
-//@version=6
-indicator("Pine3D - Contour Surface", overlay = false, max_polylines_count = 100, max_lines_count = 500, max_labels_count = 500)
-import Alien_Algorithms/Pine3D/5 as p3d
-
-var p3d.Scene scene   = p3d.newScene()
-var p3d.Mesh  heatmap = na
-
-if barstate.isfirst
-    // Damped cosine ripple
-    int N = 20
-    matrix<float> data = matrix.new<float>(N, N, 0.0)
-    for r = 0 to N - 1
-        for c = 0 to N - 1
-            float dx = c - (N - 1) / 2.0
-            float dz = r - (N - 1) / 2.0
-            float d  = math.sqrt(dx * dx + dz * dz) * 0.7
-            data.set(r, c, math.cos(d) * math.exp(-d * 0.12) * 50.0)
-
-    heatmap := p3d.surface(data, 200.0, color.blue, color.red, 24)
-      .gridBox()                                      // wireframe bounding cage
-      .gridLabels(color.white, "X", "Amplitude", "Z") // axis titles and tick values
-    scene.add(heatmap)
-    scene.camera.orbit(35.0, 25.0, 380.0)
-
-if barstate.islast
-    p3d.render(scene, lighting = true)
-```
-
-Signature: `surface(matrix<float> heights, float size, color lowCol, color highCol, int levels = 20, array<float> axisX = na, array<float> axisZ = na)`. `levels` is the number of contour bands, and colours grade from `lowCol` to `highCol`.
-
-### Non-uniform grids
-
-The optional `axisX` and `axisZ` arrays replace uniform spacing with your own column and row positions, for example logarithmic strike spacing for a volatility surface or irregular timestamps for a depth heatmap, with no resampling. Contour bands, axis ticks and the `gridBox()` cage all follow the custom positions.
-
-### Animating: updateSurface()
-
-Never rebuild the mesh per bar. Refresh the data in place:
-
-```pine
-if barstate.islast
-    heatmap.updateSurface(newDataMatrix)
-    p3d.render(scene, lighting = true)
-```
-
-`updateSurface(heights, size, lowCol, highCol, levels, axisX, axisZ)` takes the same optional arguments as `surface()`. Tick labels from `gridLabels()` follow the new data range; axis titles stay.
-
-Global-scope rule: any data feeding `updateSurface()` that uses the history operator (`[]`) or calls such as `ta.rsi()`, `ta.atr()` or `request.security()` must be computed at global scope, not inside `barstate.islast`, so Pine keeps its bar-by-bar history correctly.
-
-## Bars3D: categorical 3D bar charts
-
-`bars3D()` turns an array of values into a lit, depth-sorted 3D bar chart in one call. Bar heights follow the values, colours grade between a low and a high colour, and all bars are packed into one merged mesh that still sorts each bar correctly.
-
-```pine
-//@version=6
-indicator("Pine3D - Bars3D", overlay = false, max_polylines_count = 100, max_lines_count = 500, max_labels_count = 500)
-import Alien_Algorithms/Pine3D/5 as p3d
-
-var p3d.Scene scene = p3d.newScene()
-var p3d.Mesh  bars  = na
-array<float>  values = array.from(volume - volume[1], volume[1] - volume[2], volume[2] - volume[3],
-                                  volume[3] - volume[4], volume[4] - volume[5], volume[5] - volume[6])
-array<string> names  = array.from("dV0", "dV-1", "dV-2", "dV-3", "dV-4", "dV-5")
-
-if barstate.isfirst
-    bars := p3d.bars3D(values, 30.0, 30.0, 10.0, color.blue, color.red, 200.0)
-      .barLabels(names)      // category labels at the base of each bar
-    scene.add(bars)
-    p3d.wireGrid(scene, 300.0, 300.0, 6, 6, color.new(color.gray, 80))
-    scene.camera.orbit(215.0, 25.0, 360.0)
-
-if barstate.islast
-    bars.updateBars(values)  // refresh heights, colours and value labels in place
-    p3d.render(scene, lighting = true)
-```
-
-Signature: `bars3D(array<float> values, float barWidth, float barDepth, float spacing = 4.0, color lowCol = #2196F3, color highCol = #FF5722, float maxHeight = 100.0)`.
-
-How it behaves:
-
-- `updateBars(values)` refreshes heights, colours and label positions every frame without rebuilding the geometry, for live rankings and rolling windows.
-- Labels: call `barLabels(names)` once at build time for category labels. Value labels on top of each bar are handled by `updateBars()`: leave out `valLabels` and each value is formatted with `str.tostring()`, or pass `valLabels` for your own strings. Do not call `barLabels()` again after the build.
-- Negative values extrude downward from the base plane, with the face winding reversed automatically, so signed series such as PnL or momentum histograms work as they are.
-
-## Trail3D: streamed oscillator paths
-
-`trail3D()` draws two related series as a 3D ribbon moving through time: phase portraits, Lissajous figures, RSI against MFI, momentum against volatility, any (u, v) pair.
-
-You set a rolling capacity and push one sample per bar. The trail keeps the buffer, builds the ribbon and normalises samples against the rolling window's minimum and maximum, so the path always fills its bounding cube whatever the data's scale.
-
-```pine
-//@version=6
-indicator("Pine3D - Trail3D", overlay = false, max_polylines_count = 100, max_lines_count = 500, max_labels_count = 500)
-import Alien_Algorithms/Pine3D/5 as p3d
-
-var p3d.Scene   scene = p3d.newScene()
-var p3d.Trail3D trail = na
-
-if barstate.isfirst
-    trail := p3d.trail3D(220.0, 200, color.yellow)   // size, capacity, colour
-      .cage(true)                                    // wireframe bounding cage
-      .axisLabels("sin", "cos", color.white)
-    trail._uProj.col := #00ffff69                    // wall projection colours
-    trail._vProj.col := #ff00ff71
-    scene.add(trail)
-    scene.camera.orbit(215.0, 20.0, 360.0)
-
-float phase = bar_index * 0.15
-float sinX  = math.sin(phase) * 100.0
-float cosY  = math.cos(phase) * 100.0
 if barstate.isconfirmed
-    trail.pushSample(sinX, cosY)
-    p3d.render(scene)
+    history.push(array.from(rsi5, rsi8, rsi13, rsi21, rsi34))
+
+if barstate.islast
+    heat.drawLookback(history, 0.0, 5.0)
 ```
 
-A Trail3D is four polylines drawn together: the main ribbon, two shadow projections onto the back wall and the floor, and the cage. All four are depth-sorted and occlusion-clipped against the rest of the scene. To hide one, set its `visible` field, for example `trail._cage.visible := false`.
+### Heatmap placed on price
 
-Details:
+The pattern for a heatmap anchored to real price levels. The model belongs to the calling script; this fragment is not a complete indicator.
 
-- Signature: `trail3D(float size, int capacity = 300, color trailCol = #FFEB3B, int minSamples = 60, bool rollingBounds = true)`.
-- `capacity` is capped at 300 samples. Larger values become 300.
-- `minSamples` (default 60) is the sample count at which the cage reaches its cube width. Below it, samples stretch across a cube-shaped cage. Above it, the cage grows leftward at a fixed width per sample until it reaches `capacity`.
-- `rollingBounds = true` recomputes the minimum and maximum from the current window on every push, so samples that dropped out no longer affect the scaling. With `false`, the bounds only ever expand.
-- Methods: `pushSample()`, `axisLabels()`, `cage()`, `moveTo()`, `show()`, `hide()`.
+```pine
+// The calling script computes estimatedExposure, chooses row and column
+// indices, and supplies its own price bounds.
+var pc.ValueField levels = pc.valueField(240, 400)
+var pc.Canvas heat = pc.heatmap()
+  .colorLevels(48)
+  .opacity(10, 90)
+  .gamma(0.7)
 
-## Scatter clouds
+// For each calculated level:
+levels.set(row, column, estimatedExposure)
 
-There is no separate scatter API: `Label3D` is the point primitive, and `scene.add(array<Label3D>)` registers a whole cloud in one call. Up to 500 points, each with its own colour, symbol, size and tooltip, all depth-sorted and occlusion-clipped.
+// After the model has populated the field:
+if barstate.islast
+    heat.drawLookback(levels, 0, bottomPrice, topPrice)
+```
 
-The pattern: build the array once, add it, then change point fields on later bars to animate.
+### A Pine3D scene as an image
+
+Pine3D builds the scene, its `rasterize()` call writes the frame into a palette field, and PineCanvas draws it.
 
 ```pine
 //@version=6
-indicator("Pine3D - Scatter Cloud", overlay = false, max_polylines_count = 100, max_lines_count = 500, max_labels_count = 500)
+indicator("Pine3D with PineCanvas", overlay = false, max_polylines_count = 100)
 import Alien_Algorithms/Pine3D/5 as p3d
+import Alien_Algorithms/PineCanvas/1 as pc
+// Make sure to update to the latest library version
 
 var p3d.Scene scene = p3d.newScene()
-var array<p3d.Label3D> points = array.new<p3d.Label3D>()
+var pc.PaletteField frame = pc.paletteField(240, 384)
+var pc.Canvas canvas = pc.newCanvas()
 
 if barstate.isfirst
-    for i = 0 to 499
-        p3d.Vec3 pos = p3d.vec3(0.0, 0.0, 0.0)
-        points.push(p3d.Label3D.new(position = pos, txt = "o"))
-    scene.add(points)
-    scene.camera.orbit(35.0, 20.0, 400.0)
+    scene.add(p3d.cube(60.0, color.orange))
+    // The floor: grid() faces down, so it is turned over
+    scene.add(p3d.grid(600.0, 600.0, 8, 8, #3a4258).rotateTo(180.0, 0.0, 0.0).moveTo(0.0, -30.0, 0.0))
+    scene.camera.orbit(35.0, 25.0, 180.0)
+    scene.setLightDir(-0.7, -1.0, -0.3).setAmbient(0.25).setShadowStrength(0.6)
 
-if barstate.islast
-    for i = 0 to points.size() - 1
-        float t = i * 0.05 + bar_index * 0.01
-        p3d.Label3D pt = points.get(i)
-        pt.position  := p3d.vec3(80.0 * math.cos(t), i * 0.4 - 100.0, 80.0 * math.sin(t))
-        pt.textColor := i % 2 == 0 ? color.aqua : color.fuchsia
-    p3d.render(scene)
+if barstate.islastconfirmedhistory and bar_index >= 384
+    array<color> shades = scene.rasterize(frame.band(0), 384, 240, shades = 16, zoom = 2.4)
+    canvas.palette(shades)
+    canvas.drawLookback(frame, 0, 0.0, 240.0)
 ```
 
-A point's fields include `position`, `txt`, `textColor`, `bgColor`, `labelStyle` (any `label.style_*` constant: circles, squares, diamonds, triangles, crosses, arrows, flags), `labelSize` (any `size.*` constant), `fontFamily`, `tooltip` and `visible`. The renderer reads them every frame, so animation is plain field assignment. For a dot instead of a character, set `txt = ""` and `labelStyle = label.style_circle`.
+The 384 x 240 frame fits in one storage band. Larger frames are split across bands, each written through `band()` and `bandStart()`.
 
-Uses: k-means views, particle systems, point-sampled parametric surfaces, classification overlays and colour-graded attractors.
+### Filled shapes
 
-## Overlay primitives: labels, lines, polylines
-
-Besides meshes, three world-space overlay types can be added to a scene. They are depth-sorted and occluded against everything else. They are plain user-defined types with many fields, so create them with named arguments:
+One rectangle per candle, more opaque the heavier its volume, then one `drawShapes()` call.
 
 ```pine
-// A floating annotation
-p3d.Label3D tagLabel = p3d.Label3D.new(position = p3d.vec3(0, 80, 0), txt = "Peak", textColor = color.white)
-scene.add(tagLabel)
+//@version=6
+indicator("PineCanvas - High Volume Zones", overlay = true,
+  max_polylines_count = 100)
+import Alien_Algorithms/PineCanvas/1 as pc
+// Make sure to update to the latest library version
 
-// A 3D line segment
-p3d.Line3D axis = p3d.Line3D.new(start = p3d.vec3(0, 0, 0), end = p3d.vec3(0, 100, 0), col = color.yellow, width = 2)
-scene.add(axis)
+int lookback = input.int(100, "Lookback bars", minval = 20, maxval = 300)
+float averageVolume = ta.sma(volume, 20)
+var pc.Canvas zones = pc.newCanvas()
 
-// A 3D polyline path
-array<p3d.Vec3> pts = array.from(p3d.vec3(0,0,0), p3d.vec3(50,30,0), p3d.vec3(100,0,50))
-p3d.Polyline3D path = p3d.Polyline3D.new(points = pts, col = color.aqua, width = 2)
-scene.add(path)
+if barstate.islast and bar_index >= lookback + 19
+    for column = 0 to lookback - 1
+        int offset = lookback - 1 - column
+        int leftTime = time[offset]
+        int rightTime = offset > 0 ? time[offset - 1] : time + int(time - time[1])
+        // Heavier volume draws more opaque, in four steps so the colours stay few
+        int tier = int(math.min(3, nz(volume[offset] / averageVolume[offset]) * 2))
+        color zoneColor = color.new(
+          close[offset] >= open[offset] ? color.teal : color.red, 85 - 20 * tier)
+        zones.rect(
+          chart.point.from_time(leftTime, high[offset]),
+          chart.point.from_time(rightTime, low[offset]),
+          zoneColor)
+    zones.drawShapes()
 ```
 
-Methods:
+## Limits
 
-- `Label3D`: `moveTo()`, `moveBy()`, `setText()`, `setTextColor()`, `setTooltip()`, `show()`, `hide()`, `setTag()`.
-- `Line3D`: `setStart()`, `setEnd()`, `setPoints()`, `setColor()`, `show()`, `hide()`, `setTag()`.
-- `Polyline3D`: `setColor()`, `show()`, `hide()`, `setTag()`.
+- Drawing budgets are shared. Every Canvas in a script shares the 100 polyline limit with any other polylines. `drawingLimit()` caps one Canvas; it does not coordinate a global budget.
+- Complexity sets the practical resolution. More colours and more fragmented boundaries need more geometry. Memory and execution time remain limits even when the source fits in storage.
+- Shapes are fills, not outlined objects. A packed batch is grouped by colour, and same-colour overlaps form a union.
+- Bar-index drawings are bound to 10,000 bars back and 500 bars forward. Use time placement for farther history.
+- Each Canvas owns its drawings. Field drawing and shape drawing both replace that Canvas's previous frame.
+- Animation follows Pine executions, not a timer. Chart anti-aliasing can show thin seams between adjacent fills at some zoom levels.
+- PineCanvas reuses cached contour work and skips the redraw when the source, style and placement are unchanged.
 
-Fields without a setter are assigned directly and read every frame:
+TradingView's own Pine Script limits still apply: https://www.tradingview.com/pine-script-docs/writing/limitations/
 
-- `Label3D`: `bgColor`, `labelStyle`, `labelSize`, `fontFamily`, `visible`.
-- `Line3D`: `width`, `lineStyle` (solid, dashed, dotted and arrow styles), `visible`.
-- `Polyline3D`: `width`, `lineStyle` (solid, dashed and dotted only; TradingView polylines have no arrow styles), `fillColor`, `closed`, `visible`.
+## Runtime errors and what they mean
 
-`wireGrid(scene, w, d, divX, divZ, col)` adds a depth-sorted ground grid to a scene.
+| Message | Cause |
+| --- | --- |
+| `lookback must be 0 or >=columns` | `drawLookback()` was given a lookback smaller than the field's column count. |
+| `bar index is negative` | The picture's left edge is before the first bar. Wait for more bars or draw fewer columns. |
+| `X is >10000 bars back; use time` | The left edge is more than 10,000 bars back. Use `drawTime()`. |
+| `X is >500 future bars` | The right edge is more than 500 bars ahead of the current bar. |
+| `yMax must exceed yMin` | `top` is not greater than `bottom`. |
+| `log Y requires yMin>0` | `logarithmicY()` is on and `bottom` is zero or negative. |
+| `need N drawings, above this Canvas's drawingLimit.` | The picture needs more polylines than its Canvas may use. Use fewer colours or less fragmented detail, or raise `drawingLimit()` up to 100. |
+| `palettes needs 2..100 colors` | A palette or gradient has fewer than 2 or more than 100 colours. |
+| `colorLevels must be 2..100`, `opacity must be 0..100`, `gamma must be >0` | A style value is out of range. |
+| `valueRange requires max>min` | `valueRange()` was given a maximum that is not above the minimum. |
+| `push size must equal scroll rows` | The array given to `push()` does not have exactly `rows` values. |
+| `field cell out of bounds`, `field row out of bounds` | A row or column index is outside the field. |
+| `shape corners need from_time()` | A shape point was not created with `chart.point.from_time()`. |
+| `shape queue >100000 vertices` | More than 100,000 vertices were queued before `drawShapes()`. |
+| `shape colors exceed 100` | The queued shapes use more than 100 distinct fill colours. |
+| `shapes exceed drawingLimit` | The queued shapes need more polylines than the Canvas may use. |
+| `Canvas is na; use newCanvas()` | A method was called on a Canvas that was never created. |
 
-## Custom meshes and merging
+## Documentation
 
-### customMesh()
+The full documentation goes into each topic in more depth:
 
-When the primitives are not enough, build your own topology from vertices and `Face` descriptors:
+- Introduction: https://docs.alienalgorithms.com/PineCanvas-Graphics-Engine-Tradingview
+- Quickstart and lifecycle: https://docs.alienalgorithms.com/PineCanvas-Graphics-Engine-Tradingview/quickstart
+- Core concepts: https://docs.alienalgorithms.com/PineCanvas-Graphics-Engine-Tradingview/core-concepts
+- Value and palette fields: https://docs.alienalgorithms.com/PineCanvas-Graphics-Engine-Tradingview/fields
+- Rolling sources: https://docs.alienalgorithms.com/PineCanvas-Graphics-Engine-Tradingview/rolling-sources
+- Canvas and styling: https://docs.alienalgorithms.com/PineCanvas-Graphics-Engine-Tradingview/canvas
+- Placement and coordinates: https://docs.alienalgorithms.com/PineCanvas-Graphics-Engine-Tradingview/placement
+- Filled shapes: https://docs.alienalgorithms.com/PineCanvas-Graphics-Engine-Tradingview/shapes
+- Layers and drawing budgets: https://docs.alienalgorithms.com/PineCanvas-Graphics-Engine-Tradingview/layers
+- Heatmaps on price: https://docs.alienalgorithms.com/PineCanvas-Graphics-Engine-Tradingview/heatmaps
+- Images and Pine3D frames: https://docs.alienalgorithms.com/PineCanvas-Graphics-Engine-Tradingview/images-pine3d
+- Performance and large images: https://docs.alienalgorithms.com/PineCanvas-Graphics-Engine-Tradingview/performance
+- Common pitfalls: https://docs.alienalgorithms.com/PineCanvas-Graphics-Engine-Tradingview/troubleshooting
+- API reference: https://docs.alienalgorithms.com/PineCanvas-Graphics-Engine-Tradingview/api-reference
+- License: https://docs.alienalgorithms.com/PineCanvas-Graphics-Engine-Tradingview/license
 
-```pine
-// A single triangle
-array<p3d.Vec3> verts = array.from(p3d.vec3(-30, 0, 0), p3d.vec3(30, 0, 0), p3d.vec3(0, 50, 0))
-array<p3d.Face> faces = array.new<p3d.Face>()
-faces.push(p3d.Face.new(vi = array.from(0, 1, 2), col = color.orange))
-p3d.Mesh tri = p3d.customMesh(verts, faces)
-scene.add(tri)
-```
+## Related
 
-`Face.vi` holds vertex indices into the mesh. Every face needs at least 3 indices and should be planar.
-
-### mergeMeshes()
-
-`mergeMeshes(array<Mesh> meshes, string tag = "", bool removeInterior = false)` applies each mesh's transform and combines them into one mesh. Two behaviours matter:
-
-- `removeInterior = true` finds coincident faces with opposite normals (such as the shared wall between two adjacent cubes) and removes them, so voxel-style scenes keep only their outer shell and spend nothing on hidden faces. The brick wall in the lighting example does this.
-- Depth grouping is kept when every source mesh has the same vertex and face count (identical primitives in a grid), so the merged mesh still sorts per original piece. Mixing different shapes turns the grouping off.
-
-## The renderer
-
-Every frame is one call:
-
-```pine
-p3d.render(scene, maxFaces = 100, culling = true, lighting = false,
-     ambient = 0.3, wireframe = false, occlusion = true, occlusionRaster = 768)
-```
-
-The steps of each call: world transform, camera transform, back-face culling, occlusion culling, depth sort, lighting and shadows, perspective projection, drawing.
-
-| Parameter | Default | What it does |
-|---|---|---|
-| `maxFaces` | 100 | Cap on solid faces per frame. Contour bands, wireframe edges, labels, lines and overlay polylines do not count against it; only TradingView's own budgets bound them. |
-| `culling` | true | Back-face culling. |
-| `lighting` | false | Diffuse shading. |
-| `lightDir` | na | A light direction for this call only, the way the light travels. It replaces the scene light for this call. |
-| `ambient` | 0.3 | Minimum brightness of faces in shadow. Used with `lightDir`, or when the scene light is disabled. |
-| `wireframe` | false | Draws the whole scene as outlines only. |
-| `occlusion` | true | A sparse raster pass that drops hidden faces before drawing. A large speed gain on dense scenes. |
-| `occlusionRaster` | 768 | Resolution of that raster. Lower is faster but coarser. |
-
-Which light is used: a `lightDir` passed to `render()` wins, together with `render()`'s `ambient`. Without it, the scene's light is used with its own settings, as long as `scene.light.enabled` is true. Otherwise the defaults apply.
-
-`render()` clears the whole chart drawing pool at the start of every call: every polyline, line, label and linefill on the chart, not only Pine3D's. If the script also calls `label.new()` or `line.new()`, make those calls after `render()`, or they are wiped every frame. Tables are not affected, which the budget monitor below relies on.
-
-## Rasterizing a scene for PineCanvas
-
-`rasterize()` renders the scene's solid meshes per pixel instead of as chart drawings, with per-pixel depth, smooth shading with sharp creases, a specular highlight, and shadows when the scene light's shadow strength is above zero. It writes palette indices into an integer array, which a PineCanvas field then draws on the chart.
-
-```pine
-array<color> palette = scene.rasterize(pixels, width, height, rowStart = 0, shades = 16, zoom = 1.0, culling = true)
-```
-
-- `pixels` receives rows `rowStart` onward of a `width` x `height` frame, row-major, with row 0 at the bottom. Each cell is an index into the returned palette, or -1 where no mesh covers it.
-- The returned palette holds `shades` colours per material (each distinct face colour), from the ambient floor up to white highlights.
-- One pixel is one unit of `render()`'s screen space times `zoom`.
-- A Pine array holds at most 100,000 elements, so a larger frame is rasterized in row bands: one call per band, each with its own array and `rowStart`.
-- Wireframe and contour meshes are skipped. A mesh with `castShadow` off casts no shadow and still receives them.
-
-The PineCanvas reference, https://alienalgorithms.com/pinecanvas.md, has a complete example that draws a rasterized Pine3D frame.
-
-## Mesh drawing modes
-
-Two separate settings control how a mesh appears.
-
-Style, set with `mesh.setStyle(...)`, decides what is drawn:
-
-| Style | Result |
-|---|---|
-| `"solid"` | Filled faces (default). |
-| `"wireframe"` | Every edge, no fill. Shows interior geometry. |
-| `"wireframe_front"` | Front-facing edges only. A cleaner outline on convex meshes. |
-
-Draw mode, the `mesh.drawMode` field, decides which TradingView drawing carries solid faces:
-
-| Mode | Notes |
-|---|---|
-| `"linefill"` (default) | Uses lines and linefills, and shares one edge line between adjacent faces, about 1.6 lines per face instead of two. That lifts a mesh from 250 faces to around 360, depending on topology. Supports in-place `updateSurface()` and `updateBars()`. Edges are transparent, so solid faces have no visible outline. Recommended for new code. |
-| `"poly"` | The older polyline backend. About 100 faces, no in-place updates, but it draws face outlines with `mesh.lineStyle` and `mesh.lineWidth`. Use it only when solid faces need styled outlines. |
-
-Wireframe styles always draw with lines, whatever the draw mode.
-
-## Performance guide
-
-Pine limits the CPU time per bar, and a dense scene can hit that limit before the drawing budget. If a scene compiles but times out, try these in order:
-
-1. Lower `occlusionRaster` (for example from 768 to 384). The largest single gain.
-2. Reduce `maxFaces` to cap the solid faces.
-3. Use fewer contour `levels` on surfaces.
-4. Use fewer segments on spheres and tori.
-5. Keep heavy work behind `barstate.islast`, so historical bars build geometry without rendering it.
-
-Structural choices that cost nothing:
-
-- Build once and update with `updateSurface()` and `updateBars()`. Never rebuild geometry per bar.
-- Use `mergeMeshes(..., removeInterior = true)` for voxel-style geometry.
-- Prefer directional lights when shadows are heavy.
-- Pine3D caches world vertices, view projections, face preprocessing, shadow grids and contour geometry by itself.
-
-### Monitoring the budgets
-
-Drawing budget overruns fail silently: TradingView drops the extra drawings without an error, so missing geometry almost always means a budget overrun. A usage table makes it visible, since `render()` does not clear tables:
-
-```pine
-var table stats = table.new(position.bottom_right, 3, 2, bgcolor = color.new(#000000, 30))
-table.cell(stats, 0, 0, "Polyline", text_color = color.white, text_size = size.small)
-table.cell(stats, 1, 0, "Line", text_color = color.white, text_size = size.small)
-table.cell(stats, 2, 0, "Label", text_color = color.white, text_size = size.small)
-table.cell(stats, 0, 1, str.tostring(polyline.all.size()) + " / 100", text_color = color.white, text_size = size.small)
-table.cell(stats, 1, 1, str.tostring(line.all.size()) + " / 500", text_color = color.white, text_size = size.small)
-table.cell(stats, 2, 1, str.tostring(label.all.size()) + " / 500", text_color = color.white, text_size = size.small)
-```
-
-### Positioning the viewport
-
-`scene.guiShift` moves the scene right, into future-bar space, and `scene.yOffset` moves it vertically in price units. All drawings use `xloc.bar_time`, so the scene can sit far to the left or right of `bar_index` without making Pine extend its history buffer. This keeps the engine stable on long charts and on scenes drawn into the future.
-
-## Common pitfalls
-
-- Your own drawings are wiped every frame: they were drawn before `render()`. Call `label.new()` and `line.new()` after it.
-- Geometry is missing: a drawing budget overrun. Lower `maxFaces`, drop a contour level or simplify overlays, and use the monitor table above.
-- `updateSurface()` or `updateBars()` gives inconsistent data or compiler errors: the source series (`[]` history, `ta.*`, `request.security()`) was computed inside `barstate.islast`. Compute it at global scope.
-- Rotation looks wrong: mesh rotations are in degrees, `Vec3` rotations in radians.
-- Stale geometry after editing `mesh.vertices`: call `mesh.invalidateCache()` or `scene.invalidateAllCaches()`.
-- `scene.lookAt()` does not aim at a point: it takes a tag only. Use `scene.camera.lookAt()` for coordinates.
-- `remove(tag)` removed the wrong object: tags are searched in meshes, labels, lines, then polylines, and the first match is removed. Do not share tags across types.
-- The trail ignores your capacity: it is capped at 300 samples.
-- `barLabels()` was called every frame: call it once at build time and pass `valLabels` to `updateBars()` instead.
-- A point-light scene is slow: point lights skip the shadow grid. Use a directional light if you can.
-- No shadows appear: shadow strength defaults to 0. Call `setShadowStrength()` and render with `lighting = true`.
-
-## API quick reference
-
-### Entry points
-`newScene()`, `render(scene, ...)`, `vec3(x, y, z)`, `colorBrightness(c, factor)`
-
-### Mesh factories
-- Primitives: `cube()`, `cuboid()`, `pyramid()`, `plane()`, `sphere()`, `cylinder()`, `torus()`, `grid()`, `disc()`, `circle()`
-- Advanced: `customMesh(verts, faces)`, `mergeMeshes(meshes, tag, removeInterior)`, `surface(heights, size, lowCol, highCol, levels, axisX, axisZ)`, `bars3D(values, barWidth, barDepth, spacing, lowCol, highCol, maxHeight)`, `trail3D(size, capacity, trailCol, minSamples, rollingBounds)`
-
-### Mesh methods
-- Transform: `moveTo()`, `moveBy()`, `rotateTo()`, `rotateBy()`, `scaleTo()`, `scaleUniform()`
-- Appearance: `setColor()`, `setFaceColor()`, `setStyle()`, `show()`, `hide()`, `setTag()`
-- Direct fields: `lineWidth`, `lineStyle`, `drawMode`, `castShadow`, `visible`
-- Lifecycle: `clone()`, `faceCount()`, `invalidateCache()`
-- Data updates: `updateSurface()`, `updateBars()`
-- Chainable overlays: `gridBox()` and `gridLabels()` (surfaces), `barLabels()` (bars3D)
-
-### Scene methods
-- Lighting: `setLightDir()`, `setLightPos()`, `setLightMode()`, `setAmbient()`, `setShadowStrength()`, `showLightSource()`
-- Scene graph: `add(mesh | label | array<Label3D> | line | polyline | trail)`, `remove(index | tag)`, `clear()`
-- Lookup: `getMesh()`, `getLabel()`, `getLine()`, `getPolyline()`, `lookAt(tag)`, `totalFaces()`
-- Rendering to pixels: `rasterize(pixels, width, height, rowStart, shades, zoom, culling)`
-- Cache control: `invalidateLightCache()`, `invalidateAllCaches()`
-- Direct fields: `guiShift`, `yOffset`, `camera`, `light` (`mode`, `direction`, `position`, `ambient`, `shadowStr`, `shadowBias`, `selfShadow`, `showSource`, `enabled`)
-
-### Camera
-`setPosition()`, `lookAt(x, y, z | vec3)`, `orbit(angleX, angleY, distance)`, `setFov()`, direct fields `position`, `target`, `fov`
-
-### Vec3
-- Math: `add()`, `sub()`, `scale()`, `negate()`, `dot()`, `cross()`, `length()`, `normalize()`, `distanceTo()`, `lerp()`
-- Rotation and helpers: `rotateX()`, `rotateY()`, `rotateZ()` (radians), `copy()`, `toString()`
-
-### Overlay types (create with named arguments)
-- `Label3D` (position, txt, textColor, bgColor, labelStyle, labelSize, fontFamily, tooltip, visible, tag): `moveTo()`, `moveBy()`, `setText()`, `setTextColor()`, `setTooltip()`, `show()`, `hide()`, `setTag()`
-- `Line3D` (start, end, col, width, visible, tag, lineStyle): `setStart()`, `setEnd()`, `setPoints()`, `setColor()`, `show()`, `hide()`, `setTag()`
-- `Polyline3D` (points, col, fillColor, width, closed, visible, tag, lineStyle): `setColor()`, `show()`, `hide()`, `setTag()`
-- `Face` (vi, col): topology for `customMesh()`
-
-### Trail3D
-`pushSample()`, `axisLabels()`, `cage()`, `moveTo()`, `show()`, `hide()`
-
-### Scene helpers
-`wireGrid(scene, w, d, divX, divZ, col)`, `scene.add(array<Label3D>)` for scatter clouds
-
-## Licence
-
-Pine3D is licensed under CC BY-NC-SA 4.0 (https://creativecommons.org/licenses/by-nc-sa/4.0/). Use is free for non-commercial purposes when Alien_Algorithms (https://www.tradingview.com/u/Alien_Algorithms/?aff_id=169033#published-scripts) is credited in the description of any script that uses it. For commercial licensing, contact Alien_Algorithms on TradingView.
+- Pine3D, a 3D rendering engine for Pine Script v6 that rasterizes scenes into PineCanvas fields: https://alienalgorithms.com/pine3d
+- Liquidation Heatmap, a free TradingView indicator drawn with PineCanvas: https://alienalgorithms.com/liquidation-heatmap
+- NeuraLib, a machine learning runtime for Pine Script v6: https://alienalgorithms.com/neurallib
